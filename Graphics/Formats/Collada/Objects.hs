@@ -9,9 +9,8 @@ module Graphics.Formats.Collada.Objects
 where
 
 import Prelude hiding ((.), id)
-import qualified Text.XML.HXT.Arrow as X
+import qualified Text.XML.HXT.Core as X
 import qualified Text.XML.HXT.Arrow.ParserInterface as X
-import qualified Control.Arrow.ListArrow as LA
 import qualified Graphics.Rendering.OpenGL.GL as GL
 import qualified Data.Map as Map
 import Data.Maybe (listToMaybe)
@@ -109,20 +108,20 @@ data MaterialBinding
     deriving Show
 
 parseCollada :: String -> Maybe Model
-parseCollada = listToMaybe . LA.runLA (mainA <<< X.parseXmlDoc <<^ (\x -> ("<stdin>", x)))
+parseCollada = listToMaybe . X.runLA (mainA <<< X.parseXmlDoc <<^ (\x -> ("<stdin>", x)))
 
-mainA :: LA.LA X.XmlTree Model
+mainA :: X.LA X.XmlTree Model
 mainA = massage ^<< mainScale &&& mainScene &&& (Map.unions .< X.multi objects) <<< X.hasName "COLLADA"
     where
     massage (x,(y,z)) = Model x y z
 
-mainScale :: LA.LA X.XmlTree GL.GLfloat
+mainScale :: X.LA X.XmlTree GL.GLfloat
 mainScale = read ^<< X.getAttrValue0 "meter" <<< child (X.hasName "unit") <<< child (X.hasName "asset")
 
 infixr 1 .<
 (.<) = flip (X.>.)
 
-refAttr :: String -> LA.LA X.XmlTree ID
+refAttr :: String -> X.LA X.XmlTree ID
 refAttr name = stripHash ^<< X.getAttrValue0 name
     where
     stripHash ('#':x) = x
@@ -130,23 +129,23 @@ refAttr name = stripHash ^<< X.getAttrValue0 name
 
 objects = asum [ float_array, source, vertices, geometry, image, newparam, effect, material, node, visual_scene ]
 
-mainScene :: LA.LA X.XmlTree ID
+mainScene :: X.LA X.XmlTree ID
 mainScene = refAttr "url" <<< child (X.hasName "instance_visual_scene") <<< child (X.hasName "scene")
 
 asum = foldr1 (X.<+>)
 
-objectWithIDAttr :: String -> String -> LA.LA X.XmlTree Object -> LA.LA X.XmlTree Dict
+objectWithIDAttr :: String -> String -> X.LA X.XmlTree Object -> X.LA X.XmlTree Dict
 objectWithIDAttr attr name proc = uncurry Map.singleton ^<< (X.getAttrValue0 attr &&& proc) . X.hasName name
 
-object :: String -> LA.LA X.XmlTree Object -> LA.LA X.XmlTree Dict
+object :: String -> X.LA X.XmlTree Object -> X.LA X.XmlTree Dict
 object = objectWithIDAttr "id"
 
-float_array :: LA.LA X.XmlTree Dict
+float_array :: X.LA X.XmlTree Dict
 float_array = object "float_array" $ toArray ^<< X.getText . X.getChildren
     where
     toArray = OFloatArray . map read . words
 
-accessor :: LA.LA X.XmlTree Accessor
+accessor :: X.LA X.XmlTree Accessor
 accessor = massage ^<< (length .< child (X.hasName "param")) &&& refAttr "source" &&& X.getAttrValue0 "count" &&& X.getAttrValue "stride" &&& X.getAttrValue "offset" <<< X.hasName "accessor"
     where
     massage (len, (source, (count, (stride, offset)))) = Accessor source len (read count) (readDef len stride) (readDef 0 offset)
@@ -156,10 +155,10 @@ readDef _ s  = read s
 
 child n = n <<< X.getChildren
 
-source :: LA.LA X.XmlTree Dict
+source :: X.LA X.XmlTree Dict
 source = object "source" $ OSource ^<< accessor <<< X.getChildren <<< child (X.hasName "technique_common")
 
-input :: LA.LA X.XmlTree Input
+input :: X.LA X.XmlTree Input
 input = massage ^<< X.getAttrValue "offset" &&& X.getAttrValue0 "semantic" &&& refAttr "source" <<< X.hasName "input"
     where
     massage (offset, (semantic, source)) = Input (readDef (-1) offset) (massageSemantic semantic) source -- -1 hax!!  See vertices where this is fixedup.
@@ -169,7 +168,7 @@ input = massage ^<< X.getAttrValue "offset" &&& X.getAttrValue0 "semantic" &&& r
     massageSemantic "TEXCOORD" = SemTexCoord
     massageSemantic s = error $ "Unknown semantic: " ++ s
 
-vertices :: LA.LA X.XmlTree Dict
+vertices :: X.LA X.XmlTree Dict
 vertices = object "vertices" $ OVertices . fixups .< child input
     where
     fixups = zipWith fixup [0..]
@@ -177,30 +176,30 @@ vertices = object "vertices" $ OVertices . fixups .< child input
                                  | otherwise = Input z sem source
 
 
-triangles :: LA.LA X.XmlTree Primitive
+triangles :: X.LA X.XmlTree Primitive
 triangles = massage ^<< X.getAttrValue "material" &&& procBody <<< X.hasName "triangles"
     where
     procBody = (id .< child input) &&& (map read . words ^<< child X.getText <<< child (X.hasName "p"))
     massage (material, (inputs, p)) = PrimTriangles material inputs p
 
-mesh :: LA.LA X.XmlTree Mesh
+mesh :: X.LA X.XmlTree Mesh
 mesh = (Mesh .< child primitives) <<< X.hasName "mesh"
     where
     primitives = asum [ triangles ]
 
-geometry :: LA.LA X.XmlTree Dict
+geometry :: X.LA X.XmlTree Dict
 geometry = object "geometry" $ OGeometry ^<< child mesh
 
-image :: LA.LA X.XmlTree Dict
+image :: X.LA X.XmlTree Dict
 image = object "image" $ OImage ^<< child X.getText <<< child (X.hasName "init_from")
 
-newparam :: LA.LA X.XmlTree Dict
+newparam :: X.LA X.XmlTree Dict
 newparam = objectWithIDAttr "sid" "newparam" $ OParam ^<< asum [surface, sampler2D] <<< X.getChildren
     where
     surface = ParamSurface2D ^<< child X.getText <<< child (X.hasName "init_from") <<< X.hasAttrValue "type" (== "2D") <<< X.hasName "surface"
     sampler2D = ParamSampler2D ^<< child X.getText <<< child (X.hasName "source") <<< X.hasName "sampler2D"
 
-colorOrTexture :: LA.LA X.XmlTree ColorOrTexture
+colorOrTexture :: X.LA X.XmlTree ColorOrTexture
 colorOrTexture = texture X.<+> color
     where
     texture = uncurry COTTexture ^<< X.getAttrValue0 "texture" &&& X.getAttrValue0 "texcoord" <<< X.hasName "texture"
@@ -208,22 +207,22 @@ colorOrTexture = texture X.<+> color
     colorify [r,g,b,a] = COTColor r g b a
     colorify s = error "Malformed color"
 
-lambert :: LA.LA X.XmlTree Technique
+lambert :: X.LA X.XmlTree Technique
 lambert = TechLambert ^<< child colorOrTexture <<< child (X.hasName "diffuse") <<< X.hasName "lambert"
 
-constant :: LA.LA X.XmlTree Technique
+constant :: X.LA X.XmlTree Technique
 constant = uncurry TechConstant ^<< (child colorOrTexture <<< child (X.hasName "transparent")) &&& (read ^<< child (X.getText) <<< child (X.hasName "float") <<< child (X.hasName "transparency")) <<< X.hasName "constant"
 
-technique :: LA.LA X.XmlTree Technique
+technique :: X.LA X.XmlTree Technique
 technique = asum [lambert, constant] <<< X.getChildren <<< X.hasName "technique"
 
-effect :: LA.LA X.XmlTree Dict
+effect :: X.LA X.XmlTree Dict
 effect = object "effect" $ OEffect ^<< child technique <<< child (X.hasName "profile_COMMON")
 
-material :: LA.LA X.XmlTree Dict
+material :: X.LA X.XmlTree Dict
 material = object "material" $ OMaterial ^<< refAttr "url" <<< child (X.hasName "instance_effect")
 
-nodeRef :: LA.LA X.XmlTree NodeRef
+nodeRef :: X.LA X.XmlTree NodeRef
 nodeRef = asum [inline, instance_node] 
     where
     inline = (arr NRInstance ||| (NRNode ^<< rawNode)) <<< switch <<< X.hasName "node"
@@ -231,32 +230,32 @@ nodeRef = asum [inline, instance_node]
     convid ("", xml) = Right xml
     convid (x, _)    = Left x
 
-instance_node :: LA.LA X.XmlTree NodeRef
+instance_node :: X.LA X.XmlTree NodeRef
 instance_node = NRInstance ^<< refAttr "url" <<< X.hasName "instance_node"
 
-nodeInstance :: LA.LA X.XmlTree NodeInstance
+nodeInstance :: X.LA X.XmlTree NodeInstance
 nodeInstance = asum [NINode ^<< nodeRef, instance_geometry]
 
-instance_geometry :: LA.LA X.XmlTree NodeInstance
+instance_geometry :: X.LA X.XmlTree NodeInstance
 instance_geometry = uncurry NIGeometry ^<< refAttr "url" &&& bindings <<< X.hasName "instance_geometry"
     where
     bindings = id .< (child instance_material <<< child (X.hasName "technique_common") <<< child (X.hasName "bind_material"))
 
-matrix :: LA.LA X.XmlTree Matrix
+matrix :: X.LA X.XmlTree Matrix
 matrix = Matrix . map read . words ^<< child X.getText <<< X.hasName "matrix"
 
-rawNode :: LA.LA X.XmlTree Node
+rawNode :: X.LA X.XmlTree Node
 rawNode = uncurry Node ^<< (child matrix `X.withDefault` identityMatrix) &&& (id .< child nodeInstance) <<< X.hasName "node"
 
-node :: LA.LA X.XmlTree Dict
+node :: X.LA X.XmlTree Dict
 node = object "node" $ ONode ^<< rawNode
 
-instance_material :: LA.LA X.XmlTree MaterialBinding
+instance_material :: X.LA X.XmlTree MaterialBinding
 instance_material = conv ^<< myAttrs &&& bindAttrs <<< X.hasName "instance_material"
     where
     conv ((symbol, target), (semantic, input_semantic)) = MaterialBinding symbol target semantic input_semantic
     myAttrs = X.getAttrValue0 "symbol" &&& refAttr "target"
     bindAttrs = X.getAttrValue0 "semantic" &&& X.getAttrValue0 "input_semantic" <<< child (X.hasName "bind_vertex_input")
 
-visual_scene :: LA.LA X.XmlTree Dict
+visual_scene :: X.LA X.XmlTree Dict
 visual_scene = object "visual_scene" $ OVisualScene ^<< id .< child nodeRef
