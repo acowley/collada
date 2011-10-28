@@ -9,42 +9,39 @@ module Graphics.Formats.Collada.Objects
 where
 
 import Prelude hiding ((.), id)
-import qualified Text.XML.HXT.Core as X
-import qualified Text.XML.HXT.Arrow.ParserInterface as X
-import qualified Graphics.Rendering.OpenGL.GL as GL
+import Text.XML.HXT.Core
+--import qualified Text.XML.HXT.Arrow.ParserInterface as X
 import qualified Data.Map as Map
-import Data.Maybe (listToMaybe)
+import Data.Maybe (listToMaybe, isJust, fromJust)
 import Control.Category
 import Control.Arrow
 import Foreign.Ptr
 import Foreign.Marshal.Array
 import Data.List
 
-type Dict = Map.Map ID Object
+type Dict = Map.Map String Object
 type ID = String
 
-data Model
-    = Model { modelScale :: GL.GLfloat
-            , modelScene :: ID
-            , modelDict :: Dict
-            }
+-- This corresponds to the notion of a Collada @scene@. The identifier
+-- used to refer to a scene is drawn from the @url@ attribute of the
+-- @instance_visual_scene@ element.
+data Model = Model { modelScale :: Float
+                   , modelScene :: ID
+                   , modelDict  :: Dict }
 
-data Object
-    = OVisualScene [NodeRef]
-    | OFloatArray [GL.GLfloat]
-    | OSource Accessor
-    | OVertices [Input]
-    | OGeometry Mesh
-    | OImage FilePath
-    | OParam Parameter
-    | OEffect Technique
-    | OMaterial ID -- instance_effect
-    | ONode Node
-    deriving Show
+data Object = OVisualScene [NodeRef]
+            | OFloatArray [Float]
+            | OSource Accessor
+            | OVertices [Input]
+            | OGeometry Mesh
+            | OImage FilePath
+            | OParam Parameter
+            | OEffect Technique
+            | OMaterial ID -- ^instance_effect
+            | ONode Node
+              deriving Show
 
-data Matrix
-    = Matrix [GL.GLfloat]
-    deriving Show
+data Matrix = Matrix [Float] deriving Show
 
 identityMatrix :: Matrix
 identityMatrix = Matrix [ 1, 0, 0, 0
@@ -52,146 +49,162 @@ identityMatrix = Matrix [ 1, 0, 0, 0
                         , 0, 0, 1, 0
                         , 0, 0, 0, 1 ]
 
-data Accessor
-    = Accessor ID Int Int Int Int -- array components count stride offset
-    deriving Show
+-- |array components count stride offset
+data Accessor = Accessor ID Int Int Int Int deriving Show
 
-data Input
-    = Input Int InputSemantic ID -- offset semantic source
-    deriving Show
+-- |offset semantic source
+data Input = Input Int InputSemantic ID deriving Show
 
-data InputSemantic
-    = SemPosition
-    | SemNormal
-    | SemVertex
-    | SemTexCoord
-    deriving (Eq,Show)
+data InputSemantic = SemPosition
+                   | SemNormal
+                   | SemVertex
+                   | SemTexCoord
+                     deriving (Eq,Show)
 
-data Primitive
-    = PrimTriangles String [Input] [Int]  -- material inputs indices
-    deriving Show
+-- |material inputs indices
+data Primitive = PrimTriangles String [Input] [Int] deriving Show
 
-data Mesh = Mesh [Primitive]
-    deriving Show
+data Mesh = Mesh [Primitive] deriving Show
 
-data Parameter
-    = ParamSurface2D ID
-    | ParamSampler2D ID
-    deriving Show
+data Parameter = ParamSurface2D ID
+               | ParamSampler2D ID
+                 deriving Show
 
-data Technique
-    = TechLambert ColorOrTexture -- diffuse
-    | TechConstant ColorOrTexture GL.GLfloat -- transparent transparency
-    deriving Show
+data Technique = TechLambert ColorOrTexture -- ^diffuse
+               | TechConstant ColorOrTexture Float 
+                 -- ^transparent transparency
+                 deriving Show
 
-data ColorOrTexture
-    = COTColor GL.GLfloat GL.GLfloat GL.GLfloat GL.GLfloat
-    | COTTexture ID String   -- source texcoord
-    deriving Show
+data ColorOrTexture = COTColor Float Float Float Float -- ^RGBA
+                    | COTTexture ID String   -- ^source texcoord
+                      deriving Show
 
-data Node
-    = Node Matrix [NodeInstance]
-    deriving Show
+data Node = Node Matrix [NodeInstance] deriving Show
 
-data NodeRef
-    = NRNode Node
-    | NRInstance ID
-    deriving Show
+data NodeRef = NRNode Node
+             | NRInstance ID
+               deriving Show
 
-data NodeInstance
-    = NINode NodeRef
-    | NIGeometry ID [MaterialBinding]
-    deriving Show
+data NodeInstance = NINode NodeRef
+                  | NIGeometry ID [MaterialBinding]
+                    deriving Show
 
-data MaterialBinding
-    = MaterialBinding String ID String String -- symbol target semantic input_semantic
-    deriving Show
+-- |symbol target semantic input_semantic
+data MaterialBinding = MaterialBinding String ID String String deriving Show
 
-parseCollada :: String -> Maybe Model
-parseCollada = listToMaybe . X.runLA (mainA <<< X.parseXmlDoc <<^ (\x -> ("<stdin>", x)))
+parseCollada :: ArrowXml a => a XmlTree Model
+parseCollada = hasName "COLLADA" >>>
+               (massage ^<< mainScale &&& mainScene &&& (multi objects >. Map.unions))
+  where massage (x,(y,z)) = Model x y z
 
-mainA :: X.LA X.XmlTree Model
-mainA = massage ^<< mainScale &&& mainScene &&& (Map.unions .< X.multi objects) <<< X.hasName "COLLADA"
-    where
-    massage (x,(y,z)) = Model x y z
+mainScale :: ArrowXml a => a XmlTree Float
+-- mainScale = read ^<< getAttrValue0 "meter" <<< child (hasName "unit") <<< child (hasName "asset")
+mainScale = getChildren >>> hasName "asset" /> hasName "unit" >>> getAttrValue0 "meter" >>^ read
 
-mainScale :: X.LA X.XmlTree GL.GLfloat
-mainScale = read ^<< X.getAttrValue0 "meter" <<< child (X.hasName "unit") <<< child (X.hasName "asset")
+-- Get a named attribute, stipping off the @#@ prefix if found.
+refAttr :: ArrowXml a => String -> a XmlTree ID
+refAttr = (>>^ stripHash) . getAttrValue0
+  where stripHash ('#':x) = x
+        stripHash x = x
 
-infixr 1 .<
-(.<) = flip (X.>.)
+objects :: ArrowXml a => a XmlTree Dict
+objects = asum [ float_array, source, vertices, geometry, image,
+                 newparam, effect, material, visual_scene ]
+          
 
-refAttr :: String -> X.LA X.XmlTree ID
-refAttr name = stripHash ^<< X.getAttrValue0 name
-    where
-    stripHash ('#':x) = x
-    stripHash x = x
+-- objects = asum [ float_array, source, vertices, geometry, image,
+--                  newparam, effect, material, node, visual_scene ] >.
+--           first (Map.fromList . map (first fromJust)) . partition (isJust . fst)
 
-objects = asum [ float_array, source, vertices, geometry, image, newparam, effect, material, node, visual_scene ]
+mainScene :: ArrowXml a => a XmlTree ID
+mainScene = getChildren >>> hasName "scene" /> hasName "instance_visual_scene" >>> refAttr "url"
+-- refAttr "url" <<< child (hasName "instance_visual_scene") <<< child (hasName "scene")
 
-mainScene :: X.LA X.XmlTree ID
-mainScene = refAttr "url" <<< child (X.hasName "instance_visual_scene") <<< child (X.hasName "scene")
+asum :: ArrowPlus a => [a b c] -> a b c
+asum = foldr1 (<+>)
 
-asum = foldr1 (X.<+>)
+newparam = undefined
+effect = undefined
+material = undefined
+node = undefined
+visual_scene = undefined
 
-objectWithIDAttr :: String -> String -> X.LA X.XmlTree Object -> X.LA X.XmlTree Dict
-objectWithIDAttr attr name proc = uncurry Map.singleton ^<< (X.getAttrValue0 attr &&& proc) . X.hasName name
+-- Build a singleton 'Map' from an element with the given name using
+-- the supplied arrow to build an 'Object' from the element. The
+-- element is assumed to have an @id@ attribute that is used as the
+-- key in the 'Map'.
+object :: ArrowXml a => String -> a XmlTree Object -> a XmlTree Dict
+object name mkObj = hasName name >>>
+                    (getAttrValue0 "id" &&& mkObj) >>> arr2 Map.singleton
 
-object :: String -> X.LA X.XmlTree Object -> X.LA X.XmlTree Dict
-object = objectWithIDAttr "id"
+-- We assume every @float_array@ has an id
+float_array :: ArrowXml a => a XmlTree Dict
+float_array = object "float_array" $ getChildren >>> getText >>^ toArray
+  where toArray = OFloatArray . map read . words
 
-float_array :: X.LA X.XmlTree Dict
-float_array = object "float_array" $ toArray ^<< X.getText . X.getChildren
-    where
-    toArray = OFloatArray . map read . words
+arr5 :: Arrow a => (b1 -> b2 -> b3 -> b4 -> b5 -> c) -> a (b1, (b2, (b3, (b4, b5)))) c
+arr5 f = arr (\ ~(x1, ~(x2, ~(x3, ~(x4, x5)))) -> f x1 x2 x3 x4 x5)
 
-accessor :: X.LA X.XmlTree Accessor
-accessor = massage ^<< (length .< child (X.hasName "param")) &&& refAttr "source" &&& X.getAttrValue0 "count" &&& X.getAttrValue "stride" &&& X.getAttrValue "offset" <<< X.hasName "accessor"
-    where
-    massage (len, (source, (count, (stride, offset)))) = Accessor source len (read count) (readDef len stride) (readDef 0 offset)
+accessor :: ArrowXml a => a XmlTree Accessor
+accessor = hasName "accessor" >>> 
+             refAttr "source" &&& 
+             (getChildren >>> hasName "param" >. length)
+             &&& (getAttrValue0 "count" >>^ read)
+             &&& ((getAttrValue0 "stride" >>^ read) `withDefault` 1)
+             &&& ((getAttrValue0 "offset" >>^ read) `withDefault` 0)
+           >>> arr5 Accessor
 
-readDef d "" = d
-readDef _ s  = read s
+source :: ArrowXml a => a XmlTree Dict
+source = object "source" $ 
+         getChildren >>> hasName "technique_common" /> accessor >>^ OSource
+
+-- Note that unshared inputs do not have an @offset@ attribute. For
+-- those inputs, the offset is determined by the positional order of
+-- the @input@ element within its parent's scope.
+input :: ArrowXml a => a XmlTree (Maybe Int, (InputSemantic, String))
+input = hasName "input" >>>
+          ((getAttrValue0 "offset" >>^ read) `withDefault` Nothing)
+          &&& (getAttrValue0 "semantic" >>^ massageSemantic) 
+          &&& refAttr "source"
+  where massageSemantic "POSITION" = SemPosition
+        massageSemantic "NORMAL"   = SemNormal
+        massageSemantic "VERTEX"   = SemVertex
+        massageSemantic "TEXCOORD" = SemTexCoord
+        massageSemantic s = error $ "Unknown semantic: " ++ s
+
+-- Fill in the offset for unshared inputs using the positional
+-- ordering of @input@ elements within a parent's scope.
+fixedInputs :: ArrowXml a => ([Input] -> d) -> a XmlTree d
+fixedInputs f = input >. f . fixups
+  where fixups = zipWith fixup [0..]
+        fixup n (Nothing, (sem, source)) = Input n sem source
+        fixup _ (Just n, (sem, source)) = Input n sem source
+
+vertices :: ArrowXml a => a XmlTree Dict
+vertices = object "vertices" $ getChildren >>> fixedInputs OVertices
+
+triangles :: ArrowXml a => a XmlTree Primitive
+triangles = hasName "triangles" >>>
+              getAttrValue "material" 
+              &&& (getChildren >>> fixedInputs id)
+              &&& (getChildren >>> hasName "p" /> getText >>^ map read . words)
+            >>> arr3 PrimTriangles
+
+mesh :: ArrowXml a => a XmlTree Mesh
+mesh = hasName "mesh" /> triangles >. Mesh
+
+geometry :: ArrowXml a => a XmlTree Dict
+geometry = object "geometry" $ getChildren >>> mesh >>^ OGeometry
+
+image :: ArrowXml a => a XmlTree Dict
+image = object "image" $ 
+        getChildren >>> hasName "init_from" /> getText >>^ OImage
+
+
+{-
 
 child n = n <<< X.getChildren
 
-source :: X.LA X.XmlTree Dict
-source = object "source" $ OSource ^<< accessor <<< X.getChildren <<< child (X.hasName "technique_common")
-
-input :: X.LA X.XmlTree Input
-input = massage ^<< X.getAttrValue "offset" &&& X.getAttrValue0 "semantic" &&& refAttr "source" <<< X.hasName "input"
-    where
-    massage (offset, (semantic, source)) = Input (readDef (-1) offset) (massageSemantic semantic) source -- -1 hax!!  See vertices where this is fixedup.
-    massageSemantic "POSITION" = SemPosition
-    massageSemantic "NORMAL"   = SemNormal
-    massageSemantic "VERTEX"   = SemVertex
-    massageSemantic "TEXCOORD" = SemTexCoord
-    massageSemantic s = error $ "Unknown semantic: " ++ s
-
-vertices :: X.LA X.XmlTree Dict
-vertices = object "vertices" $ OVertices . fixups .< child input
-    where
-    fixups = zipWith fixup [0..]
-    fixup n (Input z sem source) | z == -1 = Input n sem source
-                                 | otherwise = Input z sem source
-
-
-triangles :: X.LA X.XmlTree Primitive
-triangles = massage ^<< X.getAttrValue "material" &&& procBody <<< X.hasName "triangles"
-    where
-    procBody = (id .< child input) &&& (map read . words ^<< child X.getText <<< child (X.hasName "p"))
-    massage (material, (inputs, p)) = PrimTriangles material inputs p
-
-mesh :: X.LA X.XmlTree Mesh
-mesh = (Mesh .< child primitives) <<< X.hasName "mesh"
-    where
-    primitives = asum [ triangles ]
-
-geometry :: X.LA X.XmlTree Dict
-geometry = object "geometry" $ OGeometry ^<< child mesh
-
-image :: X.LA X.XmlTree Dict
-image = object "image" $ OImage ^<< child X.getText <<< child (X.hasName "init_from")
 
 newparam :: X.LA X.XmlTree Dict
 newparam = objectWithIDAttr "sid" "newparam" $ OParam ^<< asum [surface, sampler2D] <<< X.getChildren
@@ -259,3 +272,4 @@ instance_material = conv ^<< myAttrs &&& bindAttrs <<< X.hasName "instance_mater
 
 visual_scene :: X.LA X.XmlTree Dict
 visual_scene = object "visual_scene" $ OVisualScene ^<< id .< child nodeRef
+-}
