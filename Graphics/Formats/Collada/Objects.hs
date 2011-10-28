@@ -1,3 +1,5 @@
+-- |Data model and parser for COLLADA 1.4.1 files. Partial
+-- compatibility with COLLADA 1.5 files.
 module Graphics.Formats.Collada.Objects
     ( Dict, ID
     , Model(..), Object(..), Matrix(..)
@@ -27,7 +29,8 @@ type ID = String
 -- @instance_visual_scene@ element.
 data Model = Model { modelScale :: Float
                    , modelScene :: ID
-                   , modelDict  :: Dict }
+                   , modelDict  :: Dict
+                   , modelNodes :: [Node] }
 
 data Object = OVisualScene [NodeRef]
             | OFloatArray [Float]
@@ -71,7 +74,7 @@ data Parameter = ParamSurface2D ID
                  deriving Show
 
 data Technique = TechLambert ColorOrTexture -- ^diffuse
-               | TechConstant ColorOrTexture Float 
+               | TechConstant ColorOrTexture Float
                  -- ^transparent transparency
                  deriving Show
 
@@ -79,7 +82,8 @@ data ColorOrTexture = COTColor Float Float Float Float -- ^RGBA
                     | COTTexture ID String   -- ^source texcoord
                       deriving Show
 
-data Node = Node Matrix [NodeInstance] deriving Show
+-- |id or name, transformation, 
+data Node = Node (Maybe String) Matrix [NodeInstance] deriving Show
 
 data NodeRef = NRNode Node
              | NRInstance ID
@@ -89,13 +93,15 @@ data NodeInstance = NINode NodeRef
                   | NIGeometry ID [MaterialBinding]
                     deriving Show
 
--- |symbol target semantic input_semantic
-data MaterialBinding = MaterialBinding String ID String String deriving Show
+-- |symbol (indicates to which geometry the material is attached),
+-- target (references a material), semantic, input_semantic
+data MaterialBinding = MaterialBinding String ID [(String, String)] deriving Show
 
 parseCollada :: ArrowXml a => a XmlTree Model
 parseCollada = hasName "COLLADA" >>>
                (massage ^<< mainScale &&& mainScene &&& (multi objects >. Map.unions))
-  where massage (x,(y,z)) = Model x y z
+  where massage = undefined
+--  where massage (x,(y,z)) = Model x y z
 
 mainScale :: ArrowXml a => a XmlTree Float
 -- mainScale = read ^<< getAttrValue0 "meter" <<< child (hasName "unit") <<< child (hasName "asset")
@@ -122,12 +128,6 @@ mainScene = getChildren >>> hasName "scene" /> hasName "instance_visual_scene" >
 
 asum :: ArrowPlus a => [a b c] -> a b c
 asum = foldr1 (<+>)
-
-newparam = undefined
-effect = undefined
-material = undefined
-node = undefined
-visual_scene = undefined
 
 -- Build a singleton 'Map' from an element with the given name using
 -- the supplied arrow to build an 'Object' from the element. The
@@ -200,48 +200,137 @@ image :: ArrowXml a => a XmlTree Dict
 image = object "image" $ 
         getChildren >>> hasName "init_from" /> getText >>^ OImage
 
+-- NOTE: A @surface@ element appearing as a child of a @newparam@
+-- element is only valid in COLLADA 1.4.1, and not in 1.5.
+newparam :: ArrowXml a => a XmlTree Dict
+newparam = hasName "newparam" >>>
+             getAttrValue0 "sid"
+             &&& (getChildren >>> (surface `orElse` sampler2D) >>^ OParam)
+           >>> arr2 Map.singleton
+  where surface = hasName "surface" >>> hasAttrValue "type" (== "2D") /> 
+                  hasName "init_from" /> getText >>^ ParamSurface2D
+        sampler2D = hasName "sampler2D" /> hasName "source" /> getText >>^ ParamSampler2D
+
+colorOrTexture :: ArrowXml a => a XmlTree ColorOrTexture
+colorOrTexture = texture <+> color
+  where texture = hasName "texture"
+                  >>> getAttrValue0 "texture" &&& getAttrValue0 "texcoord"
+                  >>> arr2 COTTexture
+        color = hasName "color" /> getText >>^ colorify . map read . words
+        colorify [r,g,b,a] = COTColor r g b a
+        colorify s = error "Malformed color"
+
+lambert :: ArrowXml a => a XmlTree Technique
+lambert = hasName "lambert" /> hasName "diffuse" /> colorOrTexture >>^ TechLambert
+
+-- NOTE: A @constant@ element can specificy @emission@, @reflective@,
+-- @reflectivity@, @transparent@, @transparency@, or
+-- @index_of_refraction@. We only support @transparent@ and
+-- @transparency@ at the moment.
+constant :: ArrowXml a => a XmlTree Technique
+constant = hasName "constant" /> 
+             (hasName "transparent" /> colorOrTexture)
+             &&& (hasName "transparency" /> hasName "float" /> getText >>^ read)
+           >>> arr2 TechConstant
+
+technique :: ArrowXml a => a XmlTree Technique
+technique = hasName "technique" /> asum [lambert, constant]
+
+effect :: ArrowXml a => a XmlTree Dict
+effect = object "effect" $ getChildren >>> hasName "profile_COMMON" /> technique >>^ OEffect
+
+material :: ArrowXml a => a XmlTree Dict
+material = object "material" $ 
+           getChildren >>> hasName "instance_effect" 
+           >>> refAttr "url" >>^ OMaterial
+
+-- nodeRef :: ArrowXml a => a XmlTree NodeRef
+-- nodeRef = asum [inline, instance_node] 
+--     where inline = (arr NRInstance ||| (NRNode ^<< rawNode)) <<< switch <<< X.hasName "node"
+--           switch = convid ^<< X.getAttrValue "id" &&& id
+--           convid ("", xml) = Right xml
+--           convid (x, _)    = Left x
+
+instance_node :: ArrowXml a => a XmlTree NodeInstance
+instance_node = hasName "instance_node" >>> getAttrValue0 "url" 
+                >>^ NINode . NRInstance
+
+instance_geometry :: ArrowXml a => a XmlTree NodeInstance
+instance_geometry = hasName "instance_geometry" >>>
+                      getAttrValue0 "url" 
+                      &&& (getChildren >>> bind_material >. id)
+                    >>> arr2 NIGeometry
+
+bind_material :: ArrowXml a => a XmlTree MaterialBinding
+bind_material = hasName "bind_material" /> hasName "technique_common" /> instance_material
+
+instance_material :: ArrowXml a => a XmlTree (MaterialBinding)
+instance_material = hasName "instance_material" >>>
+                      getAttrValue0 "symbol"
+                      &&& getAttrValue0 "target"
+                      &&& (getChildren >>> bind_vertex_input >. id)
+                    >>> arr3 MaterialBinding
+
+bind_vertex_input :: ArrowXml a => a XmlTree (String,String)
+bind_vertex_input = hasName "bind_vertex_input" >>>
+                      getAttrValue0 "semantic"
+                      &&& getAttrValue0 "input_semantic"
+                    >>> arr2 (,)
+
+matrix :: ArrowXml a => a XmlTree Matrix
+matrix = hasName "matrix" /> getText >>^ Matrix . map read . words
+
+translate :: ArrowXml a => a XmlTree Matrix
+translate = hasName "translate" /> getText >>^ v2m . map read . words
+  where v2m [x,y,z] = Matrix [1,0,0,x,
+                              0,1,0,y,
+                              0,0,1,z,
+                              0,0,0,1]
+        v2m _ = error "Malformed translation vector"
+
+-- Convert degrees to radians.
+deg2rad :: Float -> Float
+deg2rad x = x * 180 / pi
+
+-- Produce a 4x4 rotation matrix given a unit vector to serve as axis
+-- of rotation, and an angle expressed in radians.
+axisAngle :: (Float, Float, Float) -> Float -> Matrix
+axisAngle (u,v,w) theta = Matrix
+                          [ t*u*u+c, t*u*v+s*w, t*u*w-s*v, 0
+                          , t*u*v-s*w, t*v*v+c, t*v*w+s*u, 0
+                          , t*u*v+s*v, t*v*w-s*u, t*w*w+c, 0
+                          , 0,         0,         0,       1 ]
+  where c = cos theta
+        s = sin theta
+        t = 1 - c
+
+rotate :: ArrowXml a => a XmlTree Matrix
+rotate = hasName "rotate" /> getText >>^ rotMat . map read . words
+  where rotMat [x,y,z,theta] = axisAngle (x,y,z) $ deg2rad theta
+        rotMat _ = error "Malformed rotation"
+
+scale :: ArrowXml a => a XmlTree Matrix
+scale = hasName "scale" /> getText >>^ scaleMat . map read . words
+  where scaleMat [sx,sy,sz] = Matrix [sx,0,0,0,
+                                      0,sy,0,0,
+                                      0,0,sz,0,
+                                      0,0,0,1]
+
+concatMatrix :: [Matrix] -> Matrix
+concatMatrix = undefined
+
+node :: ArrowXml a => a XmlTree Node
+node = hasName "node" >>>
+         ((getAttrValue0 "name" >>^ Just) `withDefault` Nothing)
+         &&& (getChildren >>> asum [matrix,translate,scale,rotate] >. concatMatrix)
+         &&& (getChildren >>> asum [subNode, instance_node, instance_geometry] >. id)
+       >>> arr3 Node
+  where subNode = node >>^ NINode . NRNode
+
+visual_scene = undefined
 
 {-
-
 child n = n <<< X.getChildren
-
-
-newparam :: X.LA X.XmlTree Dict
-newparam = objectWithIDAttr "sid" "newparam" $ OParam ^<< asum [surface, sampler2D] <<< X.getChildren
-    where
-    surface = ParamSurface2D ^<< child X.getText <<< child (X.hasName "init_from") <<< X.hasAttrValue "type" (== "2D") <<< X.hasName "surface"
-    sampler2D = ParamSampler2D ^<< child X.getText <<< child (X.hasName "source") <<< X.hasName "sampler2D"
-
-colorOrTexture :: X.LA X.XmlTree ColorOrTexture
-colorOrTexture = texture X.<+> color
-    where
-    texture = uncurry COTTexture ^<< X.getAttrValue0 "texture" &&& X.getAttrValue0 "texcoord" <<< X.hasName "texture"
-    color = colorify . map read . words ^<< child X.getText <<< X.hasName "color"
-    colorify [r,g,b,a] = COTColor r g b a
-    colorify s = error "Malformed color"
-
-lambert :: X.LA X.XmlTree Technique
-lambert = TechLambert ^<< child colorOrTexture <<< child (X.hasName "diffuse") <<< X.hasName "lambert"
-
-constant :: X.LA X.XmlTree Technique
-constant = uncurry TechConstant ^<< (child colorOrTexture <<< child (X.hasName "transparent")) &&& (read ^<< child (X.getText) <<< child (X.hasName "float") <<< child (X.hasName "transparency")) <<< X.hasName "constant"
-
-technique :: X.LA X.XmlTree Technique
-technique = asum [lambert, constant] <<< X.getChildren <<< X.hasName "technique"
-
-effect :: X.LA X.XmlTree Dict
-effect = object "effect" $ OEffect ^<< child technique <<< child (X.hasName "profile_COMMON")
-
-material :: X.LA X.XmlTree Dict
-material = object "material" $ OMaterial ^<< refAttr "url" <<< child (X.hasName "instance_effect")
-
-nodeRef :: X.LA X.XmlTree NodeRef
-nodeRef = asum [inline, instance_node] 
-    where
-    inline = (arr NRInstance ||| (NRNode ^<< rawNode)) <<< switch <<< X.hasName "node"
-    switch = convid ^<< X.getAttrValue "id" &&& id
-    convid ("", xml) = Right xml
-    convid (x, _)    = Left x
 
 instance_node :: X.LA X.XmlTree NodeRef
 instance_node = NRInstance ^<< refAttr "url" <<< X.hasName "instance_node"
