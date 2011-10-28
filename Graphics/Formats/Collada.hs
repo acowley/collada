@@ -1,37 +1,9 @@
-module Graphics.Formats.Collada 
-    ( Config(..), load, defaultConfig, pathTextureLoader )
-where
-
-import qualified Graphics.Rendering.OpenGL.GL as GL
+module Graphics.Formats.Collada (load) where
 import Graphics.Formats.Collada.Objects
-import Graphics.Formats.Collada.Render
-import qualified Codec.Image.STB as Image
-import qualified Data.Bitmap.OpenGL as Bitmap
+import Text.XML.HXT.Core
 
-data Config = Config {
-    textureLoader :: String -> IO GL.TextureObject
-}
-
--- | Loads a COLLADA file from a file\'s contents (not the filename) and 
--- returns an action that draws the model.  This will throw an IO exception
--- if anything went wrong during the process.
-load :: Config -> String -> IO (IO ())
-load config contents = do
-    case parseCollada contents of
-        Nothing -> fail "Parse error"
-        Just model -> compile (textureLoader config) model
-
-defaultConfig :: Config
-defaultConfig = Config {
-    textureLoader = pathTextureLoader "."
-}
-
--- | Takes a prefix and returns a texture loader that prepends the prefix to the path
--- and loads from disk.
-pathTextureLoader :: String -> String -> IO GL.TextureObject
-pathTextureLoader prefix path = do
-    let loc = prefix ++ "/" ++ path
-    e <- Image.loadImage loc
-    case e of
-        Left err -> fail $ "Couldn't load " ++ loc ++ ": " ++ err
-        Right bmp -> Bitmap.makeSimpleBitmapTexture bmp
+-- | Loads a COLLADA file and returns an action that draws the model.
+-- This will throw an IO exception if anything went wrong during the
+-- process.
+load :: FilePath -> IO (Model)
+load f = runX $ readDocument [] f >>> parseCollada
