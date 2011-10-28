@@ -53,22 +53,16 @@ Library
   Exposed-modules:     
     Graphics.Formats.Collada
     Graphics.Formats.Collada.Objects
-    Graphics.Formats.Collada.Render
   
   -- Packages needed in order to build this package.
   Build-depends: 
     base == 4.*,
     containers,
     transformers == 0.2.*,
-    hxt >= 9 && < 9.2,
-    OpenGL == 2.4.*, 
-    stb-image == 0.2.*,
-    bitmap-opengl == 0.0.*
-
+    hxt >= 9 && < 9.2
 
   -- Modules not exported by this package.
   -- Other-modules:       
   
   -- Extra tools (e.g. alex, hsc2hs, ...) needed to build the source.
   -- Build-tools:         
-  
