@@ -333,7 +333,7 @@ concatMatrix = foldl' matMul identityMatrix
 
 node :: ArrowXml a => a XmlTree Node
 node = hasName "node" >>>
-         (((getAttrValue0 "name" >>^ Just) `withDefault` Nothing)
+         (((getAttrValue0 "id" >>^ Just) `withDefault` Nothing)
           &&& ((getChildren >>> 
                 asum [matrix,translate,scale,rotate]) >. concatMatrix)
           &&& ((getChildren >>> 
