@@ -1,13 +1,13 @@
 -- |Data model and parser for COLLADA 1.4.1 files. Partial
 -- compatibility with COLLADA 1.5 files.
 module Graphics.Formats.Collada.Objects
-    ( Dict, ID
-    , Model(..), Object(..), Matrix(..)
-    , Accessor(..), Input(..), InputSemantic(..), Primitive(..)
-    , Mesh(..), Parameter(..), Technique(..)
-    , ColorOrTexture(..), Node(..), NodeRef(..), NodeInstance(..)
-    , MaterialBinding(..), parseCollada
-    )
+    -- ( Dict, ID
+    -- , Model(..), Object(..), Matrix(..)
+    -- , Accessor(..), Input(..), InputSemantic(..), Primitive(..)
+    -- , Mesh(..), Parameter(..), Technique(..)
+    -- , ColorOrTexture(..), Node(..), NodeRef(..), NodeInstance(..)
+    -- , MaterialBinding(..), parseCollada
+    -- )
 where
 
 import Prelude hiding ((.), id)
@@ -32,7 +32,7 @@ data Model = Model { modelScale :: Float
                    , modelDict  :: Dict
                    , modelNodes :: [Node] }
 
-data Object = OVisualScene [NodeRef]
+data Object = OVisualScene [Node]
             | OFloatArray [Float]
             | OSource Accessor
             | OVertices [Input]
@@ -99,13 +99,20 @@ data MaterialBinding = MaterialBinding String ID [(String, String)] deriving Sho
 
 parseCollada :: ArrowXml a => a XmlTree Model
 parseCollada = hasName "COLLADA" >>>
-               (massage ^<< mainScale &&& mainScene &&& (multi objects >. Map.unions))
-  where massage = undefined
---  where massage (x,(y,z)) = Model x y z
+               (mainScale &&& mainScene &&& 
+                 (((multi objects >. Map.unions) &&& (multi node >. id)) >>^
+                  second (partition (isJust . nodeName)) >>^
+                  (\(objs,(namedNodes,anonNodes)) -> 
+                     (Map.unions (objs : map node2map namedNodes), anonNodes))))
+               >>> arr4 Model
+  where node2map n@(Node (Just name) _ _) = Map.singleton name (ONode n)
+        node2map _ = error "Can't create a Map with an anonymous node."
+        nodeName (Node n _ _) = n
 
 mainScale :: ArrowXml a => a XmlTree Float
 -- mainScale = read ^<< getAttrValue0 "meter" <<< child (hasName "unit") <<< child (hasName "asset")
-mainScale = getChildren >>> hasName "asset" /> hasName "unit" >>> getAttrValue0 "meter" >>^ read
+mainScale = getChildren >>> hasName "asset" /> hasName "unit" >>> 
+            getAttrValue0 "meter" >>^ read
 
 -- Get a named attribute, stipping off the @#@ prefix if found.
 refAttr :: ArrowXml a => String -> a XmlTree ID
@@ -116,14 +123,14 @@ refAttr = (>>^ stripHash) . getAttrValue0
 objects :: ArrowXml a => a XmlTree Dict
 objects = asum [ float_array, source, vertices, geometry, image,
                  newparam, effect, material, visual_scene ]
-          
 
 -- objects = asum [ float_array, source, vertices, geometry, image,
 --                  newparam, effect, material, node, visual_scene ] >.
 --           first (Map.fromList . map (first fromJust)) . partition (isJust . fst)
 
 mainScene :: ArrowXml a => a XmlTree ID
-mainScene = getChildren >>> hasName "scene" /> hasName "instance_visual_scene" >>> refAttr "url"
+mainScene = getChildren >>> hasName "scene" /> 
+            hasName "instance_visual_scene" >>> refAttr "url"
 -- refAttr "url" <<< child (hasName "instance_visual_scene") <<< child (hasName "scene")
 
 asum :: ArrowPlus a => [a b c] -> a b c
@@ -237,19 +244,13 @@ technique :: ArrowXml a => a XmlTree Technique
 technique = hasName "technique" /> asum [lambert, constant]
 
 effect :: ArrowXml a => a XmlTree Dict
-effect = object "effect" $ getChildren >>> hasName "profile_COMMON" /> technique >>^ OEffect
+effect = object "effect" $ 
+         getChildren >>> hasName "profile_COMMON" /> technique >>^ OEffect
 
 material :: ArrowXml a => a XmlTree Dict
 material = object "material" $ 
-           getChildren >>> hasName "instance_effect" 
-           >>> refAttr "url" >>^ OMaterial
-
--- nodeRef :: ArrowXml a => a XmlTree NodeRef
--- nodeRef = asum [inline, instance_node] 
---     where inline = (arr NRInstance ||| (NRNode ^<< rawNode)) <<< switch <<< X.hasName "node"
---           switch = convid ^<< X.getAttrValue "id" &&& id
---           convid ("", xml) = Right xml
---           convid (x, _)    = Left x
+           getChildren >>> hasName "instance_effect" >>> 
+           refAttr "url" >>^ OMaterial
 
 instance_node :: ArrowXml a => a XmlTree NodeInstance
 instance_node = hasName "instance_node" >>> getAttrValue0 "url" 
@@ -258,17 +259,19 @@ instance_node = hasName "instance_node" >>> getAttrValue0 "url"
 instance_geometry :: ArrowXml a => a XmlTree NodeInstance
 instance_geometry = hasName "instance_geometry" >>>
                       getAttrValue0 "url" 
-                      &&& (getChildren >>> bind_material >. id)
+                      &&& ((getChildren >>> bind_material) >. id)
                     >>> arr2 NIGeometry
 
 bind_material :: ArrowXml a => a XmlTree MaterialBinding
-bind_material = hasName "bind_material" /> hasName "technique_common" /> instance_material
+bind_material = hasName "bind_material" /> 
+                hasName "technique_common" /> 
+                instance_material
 
 instance_material :: ArrowXml a => a XmlTree (MaterialBinding)
 instance_material = hasName "instance_material" >>>
                       getAttrValue0 "symbol"
                       &&& getAttrValue0 "target"
-                      &&& (getChildren >>> bind_vertex_input >. id)
+                      &&& ((getChildren >>> bind_vertex_input) >. id)
                     >>> arr3 MaterialBinding
 
 bind_vertex_input :: ArrowXml a => a XmlTree (String,String)
@@ -293,16 +296,25 @@ deg2rad :: Float -> Float
 deg2rad x = x * 180 / pi
 
 -- Produce a 4x4 rotation matrix given a unit vector to serve as axis
--- of rotation, and an angle expressed in radians.
+-- of rotation, and an angle expressed in degrees.
 axisAngle :: (Float, Float, Float) -> Float -> Matrix
 axisAngle (u,v,w) theta = Matrix
-                          [ t*u*u+c, t*u*v+s*w, t*u*w-s*v, 0
-                          , t*u*v-s*w, t*v*v+c, t*v*w+s*u, 0
-                          , t*u*v+s*v, t*v*w-s*u, t*w*w+c, 0
+                          [ t*u*u+c, t*u*v-s*w, t*u*w+s*v, 0
+                          , t*u*v+s*w, t*v*v+c, t*v*w-s*u, 0
+                          , t*u*w-s*v, t*v*w+s*u, t*w*w+c, 0
                           , 0,         0,         0,       1 ]
-  where c = cos theta
-        s = sin theta
+  where theta' = deg2rad theta
+        c = cos theta'
+        s = sin theta'
         t = 1 - c
+
+matMul :: Matrix -> Matrix -> Matrix
+matMul (Matrix a) (Matrix b) = Matrix $ 
+                               concatMap (\r -> map (dot r) b') (toRows a)
+  where dot = (sum .) . zipWith (*)
+        b' = toRows b
+        toRows [] = []
+        toRows xs = take 4 xs : toRows (drop 4 xs)
 
 rotate :: ArrowXml a => a XmlTree Matrix
 rotate = hasName "rotate" /> getText >>^ rotMat . map read . words
@@ -317,48 +329,18 @@ scale = hasName "scale" /> getText >>^ scaleMat . map read . words
                                       0,0,0,1]
 
 concatMatrix :: [Matrix] -> Matrix
-concatMatrix = undefined
+concatMatrix = foldl' matMul identityMatrix
 
 node :: ArrowXml a => a XmlTree Node
 node = hasName "node" >>>
-         ((getAttrValue0 "name" >>^ Just) `withDefault` Nothing)
-         &&& (getChildren >>> asum [matrix,translate,scale,rotate] >. concatMatrix)
-         &&& (getChildren >>> asum [subNode, instance_node, instance_geometry] >. id)
+         (((getAttrValue0 "name" >>^ Just) `withDefault` Nothing)
+          &&& ((getChildren >>> 
+                asum [matrix,translate,scale,rotate]) >. concatMatrix)
+          &&& ((getChildren >>> 
+                asum [subNode, instance_node, instance_geometry]) >. id))
        >>> arr3 Node
   where subNode = node >>^ NINode . NRNode
 
-visual_scene = undefined
-
-{-
-child n = n <<< X.getChildren
-
-instance_node :: X.LA X.XmlTree NodeRef
-instance_node = NRInstance ^<< refAttr "url" <<< X.hasName "instance_node"
-
-nodeInstance :: X.LA X.XmlTree NodeInstance
-nodeInstance = asum [NINode ^<< nodeRef, instance_geometry]
-
-instance_geometry :: X.LA X.XmlTree NodeInstance
-instance_geometry = uncurry NIGeometry ^<< refAttr "url" &&& bindings <<< X.hasName "instance_geometry"
-    where
-    bindings = id .< (child instance_material <<< child (X.hasName "technique_common") <<< child (X.hasName "bind_material"))
-
-matrix :: X.LA X.XmlTree Matrix
-matrix = Matrix . map read . words ^<< child X.getText <<< X.hasName "matrix"
-
-rawNode :: X.LA X.XmlTree Node
-rawNode = uncurry Node ^<< (child matrix `X.withDefault` identityMatrix) &&& (id .< child nodeInstance) <<< X.hasName "node"
-
-node :: X.LA X.XmlTree Dict
-node = object "node" $ ONode ^<< rawNode
-
-instance_material :: X.LA X.XmlTree MaterialBinding
-instance_material = conv ^<< myAttrs &&& bindAttrs <<< X.hasName "instance_material"
-    where
-    conv ((symbol, target), (semantic, input_semantic)) = MaterialBinding symbol target semantic input_semantic
-    myAttrs = X.getAttrValue0 "symbol" &&& refAttr "target"
-    bindAttrs = X.getAttrValue0 "semantic" &&& X.getAttrValue0 "input_semantic" <<< child (X.hasName "bind_vertex_input")
-
-visual_scene :: X.LA X.XmlTree Dict
-visual_scene = object "visual_scene" $ OVisualScene ^<< id .< child nodeRef
--}
+visual_scene :: ArrowXml a => a XmlTree Dict
+visual_scene = object "visual_scene" $ 
+               (getChildren >>> node) >. id >>^ OVisualScene
