@@ -253,12 +253,12 @@ material = object "material" $
            refAttr "url" >>^ OMaterial
 
 instance_node :: ArrowXml a => a XmlTree NodeInstance
-instance_node = hasName "instance_node" >>> getAttrValue0 "url" 
+instance_node = hasName "instance_node" >>> refAttr "url" 
                 >>^ NINode . NRInstance
 
 instance_geometry :: ArrowXml a => a XmlTree NodeInstance
 instance_geometry = hasName "instance_geometry" >>>
-                      getAttrValue0 "url" 
+                      refAttr "url" 
                       &&& ((getChildren >>> bind_material) >. id)
                     >>> arr2 NIGeometry
 
