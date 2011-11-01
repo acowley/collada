@@ -110,7 +110,6 @@ parseCollada = hasName "COLLADA" >>>
         nodeName (Node n _ _) = n
 
 mainScale :: ArrowXml a => a XmlTree Float
--- mainScale = read ^<< getAttrValue0 "meter" <<< child (hasName "unit") <<< child (hasName "asset")
 mainScale = getChildren >>> hasName "asset" /> hasName "unit" >>> 
             getAttrValue0 "meter" >>^ read
 
@@ -124,14 +123,9 @@ objects :: ArrowXml a => a XmlTree Dict
 objects = asum [ float_array, source, vertices, geometry, image,
                  newparam, effect, material, visual_scene ]
 
--- objects = asum [ float_array, source, vertices, geometry, image,
---                  newparam, effect, material, node, visual_scene ] >.
---           first (Map.fromList . map (first fromJust)) . partition (isJust . fst)
-
 mainScene :: ArrowXml a => a XmlTree ID
 mainScene = getChildren >>> hasName "scene" /> 
             hasName "instance_visual_scene" >>> refAttr "url"
--- refAttr "url" <<< child (hasName "instance_visual_scene") <<< child (hasName "scene")
 
 asum :: ArrowPlus a => [a b c] -> a b c
 asum = foldr1 (<+>)
@@ -149,7 +143,8 @@ float_array :: ArrowXml a => a XmlTree Dict
 float_array = object "float_array" $ getChildren >>> getText >>^ toArray
   where toArray = OFloatArray . map read . words
 
-arr5 :: Arrow a => (b1 -> b2 -> b3 -> b4 -> b5 -> c) -> a (b1, (b2, (b3, (b4, b5)))) c
+arr5 :: Arrow a => (b1 -> b2 -> b3 -> b4 -> b5 -> c) -> 
+                   a (b1, (b2, (b3, (b4, b5)))) c
 arr5 f = arr (\ ~(x1, ~(x2, ~(x3, ~(x4, x5)))) -> f x1 x2 x3 x4 x5)
 
 accessor :: ArrowXml a => a XmlTree Accessor
@@ -170,7 +165,7 @@ source = object "source" $
 -- the @input@ element within its parent's scope.
 input :: ArrowXml a => a XmlTree (Maybe Int, (InputSemantic, String))
 input = hasName "input" >>>
-          ((getAttrValue0 "offset" >>^ read) `withDefault` Nothing)
+          ((getAttrValue0 "offset" >>^ Just . read) `withDefault` Nothing)
           &&& (getAttrValue0 "semantic" >>^ massageSemantic) 
           &&& refAttr "source"
   where massageSemantic "POSITION" = SemPosition
@@ -182,23 +177,23 @@ input = hasName "input" >>>
 -- Fill in the offset for unshared inputs using the positional
 -- ordering of @input@ elements within a parent's scope.
 fixedInputs :: ArrowXml a => ([Input] -> d) -> a XmlTree d
-fixedInputs f = input >. f . fixups
+fixedInputs f = (getChildren >>> input) >. f . fixups
   where fixups = zipWith fixup [0..]
         fixup n (Nothing, (sem, source)) = Input n sem source
         fixup _ (Just n, (sem, source)) = Input n sem source
 
 vertices :: ArrowXml a => a XmlTree Dict
-vertices = object "vertices" $ getChildren >>> fixedInputs OVertices
+vertices = object "vertices" $ fixedInputs OVertices
 
 triangles :: ArrowXml a => a XmlTree Primitive
-triangles = hasName "triangles" >>>
-              getAttrValue "material" 
-              &&& (getChildren >>> fixedInputs id)
-              &&& (getChildren >>> hasName "p" /> getText >>^ map read . words)
-            >>> arr3 PrimTriangles
+triangles = hasName "triangles" >>> 
+              (getAttrValue "material"
+               &&& fixedInputs id
+               &&& (getChildren >>> hasName "p" /> getText >>^ map read . words))
+              >>> arr3 PrimTriangles
 
 mesh :: ArrowXml a => a XmlTree Mesh
-mesh = hasName "mesh" /> triangles >. Mesh
+mesh = hasName "mesh" >>> (getChildren >>> triangles) >. Mesh
 
 geometry :: ArrowXml a => a XmlTree Dict
 geometry = object "geometry" $ getChildren >>> mesh >>^ OGeometry
