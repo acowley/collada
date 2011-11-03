@@ -265,7 +265,7 @@ bind_material = hasName "bind_material" />
 instance_material :: ArrowXml a => a XmlTree (MaterialBinding)
 instance_material = hasName "instance_material" >>>
                       getAttrValue0 "symbol"
-                      &&& getAttrValue0 "target"
+                      &&& refAttr "target"
                       &&& ((getChildren >>> bind_vertex_input) >. id)
                     >>> arr3 MaterialBinding
 
