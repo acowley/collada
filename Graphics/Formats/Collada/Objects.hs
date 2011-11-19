@@ -76,11 +76,24 @@ data Parameter = ParamSurface2D ID
 data Technique = TechLambert ColorOrTexture -- ^diffuse
                | TechConstant ColorOrTexture Float
                  -- ^transparent transparency
+               | TechBlinn { blinnEmission     :: Maybe ColorOrTexture
+                           , blinnAmbient      :: Maybe ColorOrTexture
+                           , blinnDiffuse      :: Maybe ColorOrTexture
+                           , blinnSpecular     :: Maybe ColorOrTexture
+                           , blinnShininess    :: Maybe FloatOrParam
+                           , blinnReflective   :: Maybe ColorOrTexture
+                           , blinnReflectivity :: Maybe FloatOrParam
+                           , blinnTransparent  :: Maybe ColorOrTexture
+                           , blinnTransparency :: Maybe FloatOrParam }
                  deriving Show
 
 data ColorOrTexture = COTColor Float Float Float Float -- ^RGBA
                     | COTTexture ID String   -- ^source texcoord
                       deriving Show
+
+data Color4 = RGBA Float Float Float Float deriving Show
+
+data FloatOrParam = FOPFloat Float | FOPParam ID deriving Show
 
 -- |id or name, transformation, 
 data Node = Node (Maybe String) Matrix [NodeInstance] deriving Show
@@ -235,8 +248,32 @@ constant = hasName "constant" />
              &&& (hasName "transparency" /> hasName "float" /> getText >>^ read)
            >>> arr2 TechConstant
 
+blinn :: ArrowXml a => a XmlTree Technique
+blinn = hasName "blinn" >>> 
+        child "emission" colorOrTexture &&&
+        child "ambient" colorOrTexture &&&
+        child "diffuse" colorOrTexture &&&
+        child "specular" colorOrTexture &&&
+        child "shininess" floatOrParam &&&
+        child "reflective" colorOrTexture &&&
+        child "reflectivity" floatOrParam &&&
+        child "transparent" colorOrTexture &&&
+        child "transparency" floatOrParam
+        >>^ arr9 TechBlinn
+  where child c f = (getChildren >>> hasName c /> f) >. listToMaybe
+        child2 _ _ = constA Nothing
+
+arr9 :: Arrow a => 
+        (a1 -> a2 -> a3 -> a4 -> a5 -> a6 -> a7 -> a8 -> a9 -> b) -> a (a1,(a2,(a3,(a4,(a5,(a6,(a7,(a8,a9)))))))) b
+arr9 f = arr $ \(x1,(x2,(x3,(x4,(x5,(x6,(x7,(x8,x9)))))))) -> f x1 x2 x3 x4 x5 x6 x7 x8 x9
+
+floatOrParam :: ArrowXml a => a XmlTree FloatOrParam
+floatOrParam = float <+> param
+  where float = hasName "float" /> getText >>^ FOPFloat . read
+        param = hasName "param" >>> refAttr "ref" >>^ FOPParam
+
 technique :: ArrowXml a => a XmlTree Technique
-technique = hasName "technique" /> asum [lambert, constant]
+technique = hasName "technique" /> asum [lambert, constant, blinn]
 
 effect :: ArrowXml a => a XmlTree Dict
 effect = object "effect" $ 
